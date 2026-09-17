@@ -14,7 +14,7 @@ from flask import Flask, current_app, request
 from flask_login import LoginManager, UserMixin, current_user, login_required
 from flask_restful import Api, Resource
 
-from conftest import API_ROOT, load_functions
+from .conftest import API_ROOT, load_functions
 from controllers.model_config import model_endpoints as endpoints
 from controllers.model_config import model_protocols as protocols
 

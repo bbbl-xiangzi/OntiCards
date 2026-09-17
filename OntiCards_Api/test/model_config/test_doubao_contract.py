@@ -18,9 +18,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from conftest import API_ROOT, load_functions
+from .conftest import API_ROOT, load_functions
 from controllers.model_config import model_endpoints as ep, model_protocols as mp
-from test_model_configuration import caller_namespace, response
+from .test_model_configuration import caller_namespace, response
 
 
 BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'

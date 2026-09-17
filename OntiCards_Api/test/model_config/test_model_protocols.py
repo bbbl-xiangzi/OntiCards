@@ -15,9 +15,9 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from uuid import uuid4
 
-from conftest import API_ROOT, load_functions
+from .conftest import API_ROOT, load_functions
 from controllers.model_config import model_endpoints as ep, model_protocols as mp
-from test_model_configuration import response, caller_namespace
+from .test_model_configuration import response, caller_namespace
 
 
 def config(protocol='auto', **values):

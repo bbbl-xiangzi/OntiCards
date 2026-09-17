@@ -16,10 +16,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import requests
 
-from conftest import API_ROOT, load_functions
+from .conftest import API_ROOT, load_functions
 from controllers.model_config import model_endpoints as ep, model_protocols as mp
 from controllers.model_config.model_native import viking_headers
-from test_model_configuration import caller_namespace, response
+from .test_model_configuration import caller_namespace, response
 
 
 def config(protocol, kind='base', **options):
