@@ -31,6 +31,7 @@ from controllers.query.sql_join_utils import (
     make_rels_block_with_relationship_cards,
     filter_relationship_data_by_tables, merge_relationship_data
 )
+from controllers.query.sql_from_guard import iter_from_table_refs
 from controllers.query.sql_prompt_loader import load_prompt, render_prompt
 from controllers.datacard.data_card_db_api import get_data_card_by_doc_id
 from controllers.weaviate_db_tool.weaviate_api import search_vector
@@ -282,16 +283,16 @@ def _fix_trino_sql_columns(sql: str, trino_tables: List[dict]) -> str:
             whitelist_tables.add(table_name_only)
 
     # 从SQL中解析FROM/JOIN，建立SQL别名到表名的映射
-    from_join_pattern = re.compile(
-        r'(?:FROM|JOIN)\s+([`"\[\]\w\.\-/]+)(?:\s+(?:AS\s+)?([`"\[\]\w\-]+))?',
-        flags=re.IGNORECASE
-    )
+    # 使用括号/引号感知的扫描器替代一次性正则，覆盖逗号隐式连接
+    _from_refs = iter_from_table_refs(sql)
 
     # 先检查所有表名是否在白名单中
     sql_tables_found = []
-    for match in from_join_pattern.finditer(sql):
-        raw_tbl = match.group(1) or ""
-        raw_alias = match.group(2) or ""
+    for _ref in _from_refs:
+        if _ref.derived:
+            continue
+        raw_tbl = _ref.raw_table or ""
+        raw_alias = _ref.raw_alias or ""
         if raw_tbl:
             # 规范化表名用于匹配（去掉所有引号，统一格式）
             tbl_normalized = _norm_ident(raw_tbl)
@@ -1756,12 +1757,6 @@ def _exec_cluster(user_question: str, db_type: str, connect_info: str,
     cluster_tables = build_cluster_tables(tables)
     allowed_tables = {_norm_ident(t.get("table_name")) for t in cluster_tables}
 
-    # 提取SQL中的表名（复用白名单校验的正则）
-    _tbl_pat = re.compile(
-        r"\b(?:FROM|JOIN)\s+([`\"\[]?[A-Za-z_][\w$-]*[`\"\]]?(?:\s*\.\s*[`\"\[]?[A-Za-z_][\w$-]*[`\"\]]?)*)",
-        re.IGNORECASE
-    )
-
     # 临时替换函数内的FROM避免误匹配
     temp_sql = sql_text
     temp_sql = re.sub(r'\b(EXTRACT|SUBSTRING|POSITION|TRIM)\s*\([^)]+\bFROM\b[^)]+\)',
@@ -1790,8 +1785,11 @@ def _exec_cluster(user_question: str, db_type: str, connect_info: str,
     allowed_with_cte = allowed_tables.copy()
     allowed_with_cte.update(cte_names)
 
-    for m in _tbl_pat.finditer(temp_sql):
-        raw_tbl = m.group(1).strip()
+    # 使用括号/引号感知的扫描器替代一次性正则，覆盖逗号隐式连接
+    for _ref in iter_from_table_refs(temp_sql):
+        if _ref.derived:
+            continue
+        raw_tbl = _ref.raw_table.strip()
         # 去掉 WITH (NOLOCK) 等提示
         raw_tbl = re.sub(r'\s+WITH\s*\(\s*NOLOCK\s*\)', '', raw_tbl, flags=re.IGNORECASE).strip()
         base = _norm_ident(raw_tbl.split()[-1])  # 取最后一段作为表名
@@ -2241,11 +2239,6 @@ def run_sql_safe_new(
         raise ValueError("检测到潜在危险关键字，拒绝执行。")
 
     # ---------- 1.x 全局 FROM/JOIN 物理表白名单扫描（先拒绝注释后再做扫描） ----------
-    _tbl_pat = re.compile(
-        r"\b(?:FROM|JOIN)\s+([`\"\[]?[A-Za-z_][\w$-]*[`\"\]]?(?:\s*\.\s*[`\"\[]?[A-Za-z_][\w$-]*[`\"\]]?)*)",
-        re.IGNORECASE
-    )
-
     # 提取 SQL 中的 CTE（公共表表达式）名称，避免将 CTE 名称误判为非白名单表
     # 匹配模式：WITH cte_name AS ( 或 , cte_name AS (
     # 注意：不能用 \b，因为 , 前面通常是 \n 或 ) 等非\w字符，
@@ -2278,8 +2271,11 @@ def run_sql_safe_new(
     temp_sql_for_table_check = re.sub(r'\b(EXTRACT|SUBSTRING|POSITION|TRIM)\s*\([^)]+\bFROM\b[^)]+\)',
                                       'FUNC_WITH_FROM_PLACEHOLDER', temp_sql_for_table_check, flags=re.IGNORECASE)
 
-    for m in _tbl_pat.finditer(temp_sql_for_table_check):
-        raw_tbl = _strip_nolock(m.group(1)).strip()
+    # 使用括号/引号感知的扫描器替代一次性正则，覆盖逗号隐式连接
+    for _ref in iter_from_table_refs(temp_sql_for_table_check):
+        if _ref.derived:
+            continue
+        raw_tbl = _strip_nolock(_ref.raw_table).strip()
         base = _norm_ident(raw_tbl.split()[-1])  # schema.table 取最后一段
         if base and base not in allowed_physical and base not in system_virtual_tables:
             # 调试：输出白名单中的表名，帮助定位问题
@@ -2341,14 +2337,20 @@ def run_sql_safe_new(
     temp_sql_for_from = re.sub(r'\b(EXTRACT|SUBSTRING|POSITION|TRIM)\s*\([^)]+\bFROM\b[^)]+\)',
                                'FUNC_WITH_FROM_PLACEHOLDER', temp_sql_for_from, flags=re.IGNORECASE)
 
-    # 捕获 FROM 与 JOIN 片段
-    from_join_pattern = re.compile(
-        r"(?:FROM|JOIN)\s+([`\"\[\]\w\.\-/]+)(?:\s+(?:AS\s+)?([`\"\[\]\w\-]+))?",
-        flags=re.IGNORECASE
-    )
-    for m in from_join_pattern.finditer(temp_sql_for_from):
-        raw_tbl = m.group(1) or ""
-        raw_alias = m.group(2) or ""
+    # 使用括号/引号感知的扫描器替代一次性正则，覆盖逗号隐式连接
+    for _ref in iter_from_table_refs(temp_sql_for_from):
+        raw_tbl = _ref.raw_table or ""
+        raw_alias = _ref.raw_alias or ""
+        # 派生表（子查询）：注册别名类似 CTE，列白名单为空集合
+        if _ref.derived:
+            if raw_alias:
+                _da = _norm_ident(raw_alias)
+                if _da:
+                    table_alias_map[_da] = _da
+                    physical_to_aliases.setdefault(_da, set()).add(_da)
+                    cte_names.add(_da)
+                    allowed_tables.setdefault(_da, set())
+            continue
         tbl = _norm_ident(raw_tbl)  # 规范化表名（去掉引号、路径，只保留最后一段）
         alias = _norm_ident(raw_alias) if raw_alias else tbl  # 无别名时用表名自身作为 alias
 
