@@ -115,7 +115,25 @@ def _read_ref_identifier(sql: str, i: int) -> tuple:
     if i >= n:
         return ("", i)
     if sql[i] in ("`", '"', "["):
-        return _read_quoted(sql, i)
+        seg, j = _read_quoted(sql, i)
+        if not seg:
+            return ("", i)
+        # >>> FIX: 继续吃点分路径 "catalog"."schema"."table" / `a`.`b` / [a].[b]
+        while j < n and sql[j] == ".":
+            k = j + 1
+            if k < n and sql[k] in ("`", '"', "["):
+                seg2, j2 = _read_quoted(sql, k)
+                if not seg2:
+                    break
+                j = j2
+            elif k < n and _is_ident_start(sql[k]):
+                m = k
+                while m < n and _is_ident_cont(sql[m]):
+                    m += 1
+                j = m
+            else:
+                break
+        return (sql[i:j], j)
     return _read_ident(sql, i)
 
 
