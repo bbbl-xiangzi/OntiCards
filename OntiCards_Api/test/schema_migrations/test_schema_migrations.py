@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-from conftest import API_ROOT
+from .conftest import API_ROOT
 from extensions import schema_migrations as migrations
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.pool import NullPool
